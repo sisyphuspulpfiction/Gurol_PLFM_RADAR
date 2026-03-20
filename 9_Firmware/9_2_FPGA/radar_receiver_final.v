@@ -51,7 +51,11 @@ module radar_receiver_final (
     input wire stm32_new_azimuth_rx,
 
     // CFAR integration: expose Doppler frame_complete to top level
-    output wire doppler_frame_done_out
+    output wire doppler_frame_done_out,
+
+    // Ground clutter removal controls
+    input wire        host_mti_enable,       // 1=MTI active, 0=pass-through
+    input wire [2:0]  host_dc_notch_width    // DC notch: zero Doppler bins within ±width of DC
 );
 
 // ========== INTERNAL SIGNALS ==========
@@ -101,6 +105,13 @@ wire signed [15:0] decimated_range_i;
 wire signed [15:0] decimated_range_q;
 wire decimated_range_valid;
 wire [5:0] decimated_range_bin;
+
+// ========== MTI CANCELLER SIGNALS ==========
+wire signed [15:0] mti_range_i;
+wire signed [15:0] mti_range_q;
+wire mti_range_valid;
+wire [5:0] mti_range_bin;
+wire mti_first_chirp;
 
 // ========== RADAR MODE CONTROLLER SIGNALS ==========
 wire rmc_scanning;
@@ -328,6 +339,28 @@ range_bin_decimator #(
     .watchdog_timeout()                // Diagnostic — unconnected (monitored via ILA if needed)
 );
 
+// ========== MTI CANCELLER (Ground Clutter Removal) ==========
+// 2-pulse canceller: subtracts previous chirp from current chirp.
+// H(z) = 1 - z^{-1} → null at DC Doppler, removes stationary clutter.
+// When host_mti_enable=0: transparent pass-through.
+mti_canceller #(
+    .NUM_RANGE_BINS(64),
+    .DATA_WIDTH(16)
+) mti_inst (
+    .clk(clk),
+    .reset_n(reset_n),
+    .range_i_in(decimated_range_i),
+    .range_q_in(decimated_range_q),
+    .range_valid_in(decimated_range_valid),
+    .range_bin_in(decimated_range_bin),
+    .range_i_out(mti_range_i),
+    .range_q_out(mti_range_q),
+    .range_valid_out(mti_range_valid),
+    .range_bin_out(mti_range_bin),
+    .mti_enable(host_mti_enable),
+    .mti_first_chirp(mti_first_chirp)
+);
+
 // ========== FRAME SYNC USING chirp_counter ==========
 reg [5:0] chirp_counter_prev;
 reg new_frame_pulse;
@@ -360,8 +393,9 @@ end
 assign new_chirp_frame = new_frame_pulse;
 
 // ========== DATA PACKING FOR DOPPLER ==========
-assign range_data_32bit = {decimated_range_q, decimated_range_i};
-assign range_data_valid = decimated_range_valid;
+// Use MTI-filtered data (or pass-through if MTI disabled)
+assign range_data_32bit = {mti_range_q, mti_range_i};
+assign range_data_valid = mti_range_valid;
 
 // ========== DOPPLER PROCESSOR ==========
 doppler_processor_optimized #(

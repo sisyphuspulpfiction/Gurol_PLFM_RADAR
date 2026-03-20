@@ -234,6 +234,10 @@ reg [7:0]  host_cfar_alpha;       // Opcode 0x23: threshold multiplier (Q4.4)
 reg [1:0]  host_cfar_mode;        // Opcode 0x24: 00=CA, 01=GO, 10=SO
 reg        host_cfar_enable;      // Opcode 0x25: 1=CFAR, 0=simple threshold
 
+// Ground clutter removal registers (host-configurable via USB)
+reg        host_mti_enable;       // Opcode 0x26: 1=MTI active, 0=pass-through
+reg [2:0]  host_dc_notch_width;   // Opcode 0x27: DC notch ±width bins (0=off, 1..7)
+
 // ============================================================================
 // CLOCK BUFFERING
 // ============================================================================
@@ -486,7 +490,10 @@ radar_receiver_final rx_inst (
     .stm32_new_elevation_rx(stm32_new_elevation),
     .stm32_new_azimuth_rx(stm32_new_azimuth),
     // CFAR: Doppler frame-complete pulse
-    .doppler_frame_done_out(rx_frame_complete)
+    .doppler_frame_done_out(rx_frame_complete),
+    // Ground clutter removal
+    .host_mti_enable(host_mti_enable),
+    .host_dc_notch_width(host_dc_notch_width)
 );
 
 // ============================================================================
@@ -498,6 +505,26 @@ radar_receiver_final rx_inst (
 assign rx_doppler_real = rx_doppler_output[15:0];
 assign rx_doppler_imag = rx_doppler_output[31:16];
 assign rx_doppler_data_valid = rx_doppler_valid;
+
+// ============================================================================
+// DC NOTCH FILTER (post-Doppler-FFT, pre-CFAR)
+// ============================================================================
+// Zeros out Doppler bins within ±host_dc_notch_width of DC (bin 0).
+// In a 32-point FFT, DC is bin 0; negative Doppler wraps to bins 31,30,...
+// notch_width=1 → zero bins {0}. notch_width=2 → zero bins {0,1,31}. etc.
+// When host_dc_notch_width=0: pass-through (no zeroing).
+
+wire dc_notch_active;
+wire [4:0] dop_bin_unsigned = rx_doppler_bin;
+assign dc_notch_active = (host_dc_notch_width != 3'd0) &&
+                          (dop_bin_unsigned < {2'b0, host_dc_notch_width} ||
+                           dop_bin_unsigned > (5'd31 - {2'b0, host_dc_notch_width} + 5'd1));
+
+// Notched Doppler data: zero I/Q when in notch zone, pass through otherwise
+wire [31:0] notched_doppler_data  = dc_notch_active ? 32'd0 : rx_doppler_output;
+wire        notched_doppler_valid = rx_doppler_valid;
+wire [4:0]  notched_doppler_bin   = rx_doppler_bin;
+wire [5:0]  notched_range_bin     = rx_range_bin;
 
 // ============================================================================
 // CFAR DETECTOR (replaces simple threshold detector)
@@ -520,11 +547,11 @@ cfar_ca cfar_inst (
     .clk(clk_100m_buf),
     .reset_n(sys_reset_n),
 
-    // Doppler processor outputs
-    .doppler_data(rx_doppler_output),
-    .doppler_valid(rx_doppler_valid),
-    .doppler_bin_in(rx_doppler_bin),
-    .range_bin_in(rx_range_bin),
+    // Doppler processor outputs (DC-notch filtered)
+    .doppler_data(notched_doppler_data),
+    .doppler_valid(notched_doppler_valid),
+    .doppler_bin_in(notched_doppler_bin),
+    .range_bin_in(notched_range_bin),
     .frame_complete(rx_frame_complete),
 
     // Configuration
@@ -703,6 +730,9 @@ always @(posedge clk_100m_buf or negedge sys_reset_n) begin
         host_cfar_alpha         <= 8'h30;     // alpha=3.0 (Q4.4)
         host_cfar_mode          <= 2'b00;     // CA-CFAR
         host_cfar_enable        <= 1'b0;      // Disabled (simple threshold)
+        // Ground clutter removal defaults (disabled — backward-compatible)
+        host_mti_enable         <= 1'b0;      // MTI off
+        host_dc_notch_width     <= 3'd0;      // DC notch off
     end else begin
         host_trigger_pulse <= 1'b0;    // Self-clearing pulse
         host_status_request <= 1'b0;   // Self-clearing pulse
@@ -741,6 +771,9 @@ always @(posedge clk_100m_buf or negedge sys_reset_n) begin
                 8'h23: host_cfar_alpha         <= usb_cmd_value[7:0];
                 8'h24: host_cfar_mode          <= usb_cmd_value[1:0];
                 8'h25: host_cfar_enable        <= usb_cmd_value[0];
+                // Ground clutter removal opcodes
+                8'h26: host_mti_enable         <= usb_cmd_value[0];
+                8'h27: host_dc_notch_width     <= usb_cmd_value[2:0];
                 8'hFF: host_status_request     <= 1'b1;  // Gap 2: status readback
                 default: ;
             endcase
