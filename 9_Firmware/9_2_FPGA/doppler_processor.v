@@ -353,6 +353,9 @@ always @(posedge clk or negedge reset_n) begin
                 end
             end
             
+            default: begin
+                state <= S_IDLE;
+            end
         endcase
         
         status <= {state, frame_buffer_full};

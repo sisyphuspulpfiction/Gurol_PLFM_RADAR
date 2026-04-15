@@ -456,6 +456,7 @@ always @(posedge ft601_clk_in or negedge ft601_reset_n) begin
                             1: ft601_data_out <= {range_profile_cap[23:0], 8'h00};
                             2: ft601_data_out <= {range_profile_cap[15:0], 16'h0000};
                             3: ft601_data_out <= {range_profile_cap[7:0], 24'h000000};
+                            default: ft601_data_out <= 32'h00000000;
                         endcase
                         
                         ft601_wr_n <= 0;
@@ -485,6 +486,7 @@ always @(posedge ft601_clk_in or negedge ft601_reset_n) begin
                             1: ft601_data_out <= {doppler_imag_cap, doppler_real_cap[15:8], 8'h00};
                             2: ft601_data_out <= {doppler_real_cap[7:0], doppler_imag_cap[15:8], 16'h0000};
                             3: ft601_data_out <= {doppler_imag_cap[7:0], 24'h000000};
+                            default: ft601_data_out <= 32'h00000000;
                         endcase
                         
                         ft601_wr_n <= 0;

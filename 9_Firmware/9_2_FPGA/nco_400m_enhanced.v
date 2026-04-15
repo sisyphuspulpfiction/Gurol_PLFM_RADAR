@@ -340,6 +340,10 @@ always @(posedge clk_400m or negedge reset_n) begin
                 sin_out <= sin_neg_reg;
                 cos_out <= cos_abs_reg2;
             end
+            default: begin
+                sin_out <= 16'h0000;
+                cos_out <= 16'h0000;
+            end
         endcase
     end
 end
